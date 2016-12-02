@@ -137,10 +137,10 @@ func testEncHandshake(token []byte) error {
 	if !reflect.DeepEqual(c0.rw.ingressMAC, c1.rw.egressMAC) {
 		return fmt.Errorf("ingress mac mismatch:\n c0.rw: %#v\n c1.rw: %#v", c0.rw.ingressMAC, c1.rw.egressMAC)
 	}
-	if !reflect.DeepEqual(c0.rw.enc, c1.rw.enc) {
+	if !reflect.DeepEqual(c0.rw.enc, c1.rw.dec) {
 		return fmt.Errorf("enc cipher mismatch:\n c0.rw: %#v\n c1.rw: %#v", c0.rw.enc, c1.rw.enc)
 	}
-	if !reflect.DeepEqual(c0.rw.dec, c1.rw.dec) {
+	if !reflect.DeepEqual(c0.rw.dec, c1.rw.enc) {
 		return fmt.Errorf("dec cipher mismatch:\n c0.rw: %#v\n c1.rw: %#v", c0.rw.dec, c1.rw.dec)
 	}
 	return nil
@@ -268,10 +268,11 @@ func TestRLPXFrameFake(t *testing.T) {
 	hash := fakeHash([]byte{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1})
 	rw := newRLPXFrameRW(buf, secrets{
 		AES:        crypto.Keccak256(),
+		AES2:       crypto.Keccak256(),
 		MAC:        crypto.Keccak256(),
 		IngressMAC: hash,
 		EgressMAC:  hash,
-	})
+	}, true)
 
 	golden := unhex(`
 00828ddae471818bb0bfa6b551d1cb42
@@ -320,34 +321,37 @@ func (h fakeHash) Sum(b []byte) []byte { return append(b, h...) }
 func TestRLPXFrameRW(t *testing.T) {
 	var (
 		aesSecret      = make([]byte, 16)
+		aesSecret2     = make([]byte, 16)
 		macSecret      = make([]byte, 16)
 		egressMACinit  = make([]byte, 32)
 		ingressMACinit = make([]byte, 32)
 	)
-	for _, s := range [][]byte{aesSecret, macSecret, egressMACinit, ingressMACinit} {
+	for _, s := range [][]byte{aesSecret, aesSecret2, macSecret, egressMACinit, ingressMACinit} {
 		rand.Read(s)
 	}
 	conn := new(bytes.Buffer)
 
 	s1 := secrets{
 		AES:        aesSecret,
+		AES2:       aesSecret2,
 		MAC:        macSecret,
 		EgressMAC:  sha3.NewKeccak256(),
 		IngressMAC: sha3.NewKeccak256(),
 	}
 	s1.EgressMAC.Write(egressMACinit)
 	s1.IngressMAC.Write(ingressMACinit)
-	rw1 := newRLPXFrameRW(conn, s1)
+	rw1 := newRLPXFrameRW(conn, s1, true)
 
 	s2 := secrets{
 		AES:        aesSecret,
+		AES2:       aesSecret2,
 		MAC:        macSecret,
 		EgressMAC:  sha3.NewKeccak256(),
 		IngressMAC: sha3.NewKeccak256(),
 	}
 	s2.EgressMAC.Write(ingressMACinit)
 	s2.IngressMAC.Write(egressMACinit)
-	rw2 := newRLPXFrameRW(conn, s2)
+	rw2 := newRLPXFrameRW(conn, s2, false)
 
 	// send some messages
 	for i := 0; i < 10; i++ {
@@ -575,9 +579,11 @@ func TestHandshakeForwardCompatibility(t *testing.T) {
 		authRespCiphertext = unhex(eip8HandshakeRespTests[1].input)
 		authMsg            = makeAuth(eip8HandshakeAuthTests[1])
 		wantAES            = unhex("80e8632c05fed6fc2a13b0f8d31a3cf645366239170ea067065aba8e28bac487")
-		wantMAC            = unhex("2ea74ec5dae199227dff1af715362700e989d889d7a493cb0639691efb8e5f98")
-		wantFooIngressHash = unhex("0c7ec6340062cc46f5e9f1e3cf86f8c8c403c5a0964f5df0ebd34a75ddc86db5")
+		wantAES2           = unhex("2ea74ec5dae199227dff1af715362700e989d889d7a493cb0639691efb8e5f98")
+		wantMAC            = unhex("251d85f1cc140f8f229a495f35ae4c677b65da18f9f5c956cc6cec1795698118")
+		wantFooIngressHash = unhex("a07d0a7bbc334d840eb053dd489527e8b4cf3cc91cd4a8e2d09d8051dde2103c")
 	)
+
 	if err := hs.handleAuthMsg(authMsg, keyB); err != nil {
 		t.Fatalf("handleAuthMsg: %v", err)
 	}
@@ -585,8 +591,12 @@ func TestHandshakeForwardCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatalf("secrets: %v", err)
 	}
+
 	if !bytes.Equal(derived.AES, wantAES) {
 		t.Errorf("aes-secret mismatch:\ngot %x\nwant %x", derived.AES, wantAES)
+	}
+	if !bytes.Equal(derived.AES2, wantAES2) {
+		t.Errorf("aes-secret2 mismatch:\ngot %x\nwant %x", derived.AES2, wantAES2)
 	}
 	if !bytes.Equal(derived.MAC, wantMAC) {
 		t.Errorf("mac-secret mismatch:\ngot %x\nwant %x", derived.MAC, wantMAC)
