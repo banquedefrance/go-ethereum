@@ -47,9 +47,10 @@ func newTestTransport(id discover.NodeID, fd net.Conn) transport {
 	wrapped.rw = newRLPXFrameRW(fd, secrets{
 		MAC:        zero16,
 		AES:        zero16,
+		AES2:       zero16,
 		IngressMAC: sha3.NewKeccak256(),
 		EgressMAC:  sha3.NewKeccak256(),
-	})
+	}, true)
 	return &testTransport{id: id, rlpx: wrapped}
 }
 

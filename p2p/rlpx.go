@@ -164,17 +164,20 @@ func (t *rlpx) doEncHandshake(prv *ecdsa.PrivateKey, dial *discover.Node) (disco
 	var (
 		sec secrets
 		err error
+		initiator bool	// A flag tracking if node is initiator of the handshake
 	)
 	if dial == nil {
 		sec, err = receiverEncHandshake(t.fd, prv, nil)
+		initiator = false
 	} else {
 		sec, err = initiatorEncHandshake(t.fd, prv, dial.ID, nil)
+		initiator = true
 	}
 	if err != nil {
 		return discover.NodeID{}, err
 	}
 	t.wmu.Lock()
-	t.rw = newRLPXFrameRW(t.fd, sec)
+	t.rw = newRLPXFrameRW(t.fd, sec, initiator)
 	t.wmu.Unlock()
 	return sec.RemoteID, nil
 }
@@ -194,7 +197,7 @@ type encHandshake struct {
 // which are negotiated during the encryption handshake.
 type secrets struct {
 	RemoteID              discover.NodeID
-	AES, MAC              []byte
+	AES, AES2, MAC        []byte
 	EgressMAC, IngressMAC hash.Hash
 	Token                 []byte
 }
@@ -233,10 +236,12 @@ func (h *encHandshake) secrets(auth, authResp []byte) (secrets, error) {
 	// derive base secrets from ephemeral key agreement
 	sharedSecret := crypto.Keccak256(ecdheSecret, crypto.Keccak256(h.respNonce, h.initNonce))
 	aesSecret := crypto.Keccak256(ecdheSecret, sharedSecret)
+	aesSecret2 := crypto.Keccak256(ecdheSecret, aesSecret)	// derive a second secret for aes
 	s := secrets{
 		RemoteID: h.remoteID,
 		AES:      aesSecret,
-		MAC:      crypto.Keccak256(ecdheSecret, aesSecret),
+		AES2:     aesSecret2,
+		MAC:      crypto.Keccak256(ecdheSecret, aesSecret2), // derive mac secret from second aes secret
 	}
 
 	// setup sha3 instances for the MACs
@@ -558,22 +563,38 @@ type rlpxFrameRW struct {
 	ingressMAC hash.Hash
 }
 
-func newRLPXFrameRW(conn io.ReadWriter, s secrets) *rlpxFrameRW {
+func newRLPXFrameRW(conn io.ReadWriter, s secrets, initiator bool) *rlpxFrameRW {
 	macc, err := aes.NewCipher(s.MAC)
 	if err != nil {
 		panic("invalid MAC secret: " + err.Error())
 	}
-	encc, err := aes.NewCipher(s.AES)
+	// initializes aes keys according to role played by node during the handshake
+	var enccKey, deccKey []byte
+	if initiator {
+		enccKey = s.AES
+		deccKey = s.AES2
+	} else {
+		enccKey = s.AES2
+		deccKey = s.AES
+	}
+	// create 2 cyphers
+	encc, err := aes.NewCipher(enccKey)
 	if err != nil {
 		panic("invalid AES secret: " + err.Error())
 	}
-	// we use an all-zeroes IV for AES because the key used
-	// for encryption is ephemeral.
-	iv := make([]byte, encc.BlockSize())
+	decc, err := aes.NewCipher(deccKey)
+	if err != nil {
+		panic("invalid AES secret: " + err.Error())
+	}
+	// we use an all-zeroes IVs for AES because the keys used
+	// for encryption are ephemeral.
+	enccIv := make([]byte, encc.BlockSize())
+	deccIv := make([]byte, decc.BlockSize())
+
 	return &rlpxFrameRW{
 		conn:       conn,
-		enc:        cipher.NewCTR(encc, iv),
-		dec:        cipher.NewCTR(encc, iv),
+		enc:        cipher.NewCTR(encc, enccIv),
+		dec:        cipher.NewCTR(decc, deccIv),
 		macCipher:  macc,
 		egressMAC:  s.EgressMAC,
 		ingressMAC: s.IngressMAC,

@@ -1,0 +1,235 @@
+From 7b715ac8ef49c85a04865e4b9d9ae2dace778921 Mon Sep 17 00:00:00 2001
+From: LaurentMT <laurentmt145@gmail.com>
+Date: Fri, 2 Dec 2016 16:15:19 +0100
+Subject: [PATCH] Updated unit tests of p2p package for commit [e8cba72]
+
+---
+ p2p/rlpx_test.go   | 26 ++++++++++++++++++--------
+ p2p/server_test.go |  3 ++-
+ 2 files changed, 20 insertions(+), 9 deletions(-)
+
+diff --git a/p2p/rlpx_test.go b/p2p/rlpx_test.go
+index f4cefa6..355b782 100644
+--- a/p2p/rlpx_test.go
++++ b/p2p/rlpx_test.go
+@@ -137,10 +137,10 @@ func testEncHandshake(token []byte) error {
+ 	if !reflect.DeepEqual(c0.rw.ingressMAC, c1.rw.egressMAC) {
+ 		return fmt.Errorf("ingress mac mismatch:\n c0.rw: %#v\n c1.rw: %#v", c0.rw.ingressMAC, c1.rw.egressMAC)
+ 	}
+-	if !reflect.DeepEqual(c0.rw.enc, c1.rw.enc) {
++	if !reflect.DeepEqual(c0.rw.enc, c1.rw.dec) {
+ 		return fmt.Errorf("enc cipher mismatch:\n c0.rw: %#v\n c1.rw: %#v", c0.rw.enc, c1.rw.enc)
+ 	}
+-	if !reflect.DeepEqual(c0.rw.dec, c1.rw.dec) {
++	if !reflect.DeepEqual(c0.rw.dec, c1.rw.enc) {
+ 		return fmt.Errorf("dec cipher mismatch:\n c0.rw: %#v\n c1.rw: %#v", c0.rw.dec, c1.rw.dec)
+ 	}
+ 	return nil
+@@ -268,10 +268,11 @@ func TestRLPXFrameFake(t *testing.T) {
+ 	hash := fakeHash([]byte{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1})
+ 	rw := newRLPXFrameRW(buf, secrets{
+ 		AES:        crypto.Keccak256(),
++		AES2:       crypto.Keccak256(),
+ 		MAC:        crypto.Keccak256(),
+ 		IngressMAC: hash,
+ 		EgressMAC:  hash,
+-	})
++	}, true)
+ 
+ 	golden := unhex(`
+ 00828ddae471818bb0bfa6b551d1cb42
+@@ -320,34 +321,37 @@ func (h fakeHash) Sum(b []byte) []byte { return append(b, h...) }
+ func TestRLPXFrameRW(t *testing.T) {
+ 	var (
+ 		aesSecret      = make([]byte, 16)
++		aesSecret2     = make([]byte, 16)
+ 		macSecret      = make([]byte, 16)
+ 		egressMACinit  = make([]byte, 32)
+ 		ingressMACinit = make([]byte, 32)
+ 	)
+-	for _, s := range [][]byte{aesSecret, macSecret, egressMACinit, ingressMACinit} {
++	for _, s := range [][]byte{aesSecret, aesSecret2, macSecret, egressMACinit, ingressMACinit} {
+ 		rand.Read(s)
+ 	}
+ 	conn := new(bytes.Buffer)
+ 
+ 	s1 := secrets{
+ 		AES:        aesSecret,
++		AES2:       aesSecret2,
+ 		MAC:        macSecret,
+ 		EgressMAC:  sha3.NewKeccak256(),
+ 		IngressMAC: sha3.NewKeccak256(),
+ 	}
+ 	s1.EgressMAC.Write(egressMACinit)
+ 	s1.IngressMAC.Write(ingressMACinit)
+-	rw1 := newRLPXFrameRW(conn, s1)
++	rw1 := newRLPXFrameRW(conn, s1, true)
+ 
+ 	s2 := secrets{
+ 		AES:        aesSecret,
++		AES2:       aesSecret2,
+ 		MAC:        macSecret,
+ 		EgressMAC:  sha3.NewKeccak256(),
+ 		IngressMAC: sha3.NewKeccak256(),
+ 	}
+ 	s2.EgressMAC.Write(ingressMACinit)
+ 	s2.IngressMAC.Write(egressMACinit)
+-	rw2 := newRLPXFrameRW(conn, s2)
++	rw2 := newRLPXFrameRW(conn, s2, false)
+ 
+ 	// send some messages
+ 	for i := 0; i < 10; i++ {
+@@ -575,9 +579,11 @@ func TestHandshakeForwardCompatibility(t *testing.T) {
+ 		authRespCiphertext = unhex(eip8HandshakeRespTests[1].input)
+ 		authMsg            = makeAuth(eip8HandshakeAuthTests[1])
+ 		wantAES            = unhex("80e8632c05fed6fc2a13b0f8d31a3cf645366239170ea067065aba8e28bac487")
+-		wantMAC            = unhex("2ea74ec5dae199227dff1af715362700e989d889d7a493cb0639691efb8e5f98")
+-		wantFooIngressHash = unhex("0c7ec6340062cc46f5e9f1e3cf86f8c8c403c5a0964f5df0ebd34a75ddc86db5")
++		wantAES2           = unhex("2ea74ec5dae199227dff1af715362700e989d889d7a493cb0639691efb8e5f98")
++		wantMAC            = unhex("251d85f1cc140f8f229a495f35ae4c677b65da18f9f5c956cc6cec1795698118")
++		wantFooIngressHash = unhex("a07d0a7bbc334d840eb053dd489527e8b4cf3cc91cd4a8e2d09d8051dde2103c")
+ 	)
++
+ 	if err := hs.handleAuthMsg(authMsg, keyB); err != nil {
+ 		t.Fatalf("handleAuthMsg: %v", err)
+ 	}
+@@ -585,9 +591,13 @@ func TestHandshakeForwardCompatibility(t *testing.T) {
+ 	if err != nil {
+ 		t.Fatalf("secrets: %v", err)
+ 	}
++
+ 	if !bytes.Equal(derived.AES, wantAES) {
+ 		t.Errorf("aes-secret mismatch:\ngot %x\nwant %x", derived.AES, wantAES)
+ 	}
++	if !bytes.Equal(derived.AES2, wantAES2) {
++		t.Errorf("aes-secret2 mismatch:\ngot %x\nwant %x", derived.AES2, wantAES2)
++	}
+ 	if !bytes.Equal(derived.MAC, wantMAC) {
+ 		t.Errorf("mac-secret mismatch:\ngot %x\nwant %x", derived.MAC, wantMAC)
+ 	}
+diff --git a/p2p/server_test.go b/p2p/server_test.go
+index 313d086..8c50b06 100644
+--- a/p2p/server_test.go
++++ b/p2p/server_test.go
+@@ -47,9 +47,10 @@ func newTestTransport(id discover.NodeID, fd net.Conn) transport {
+ 	wrapped.rw = newRLPXFrameRW(fd, secrets{
+ 		MAC:        zero16,
+ 		AES:        zero16,
++		AES2:       zero16,
+ 		IngressMAC: sha3.NewKeccak256(),
+ 		EgressMAC:  sha3.NewKeccak256(),
+-	})
++	}, true)
+ 	return &testTransport{id: id, rlpx: wrapped}
+ }
+ 
+-- 
+2.8.2.windows.1
+
+From e8cba7283b57280b1bcf5761478f852398365901 Mon Sep 17 00:00:00 2001
+From: LaurentMT <laurentmt145@gmail.com>
+Date: Sun, 27 Nov 2016 18:39:02 +0100
+Subject: [PATCH] Fix for #1315 (for private networks only)
+
+---
+ p2p/rlpx.go | 41 +++++++++++++++++++++++++++++++----------
+ 1 file changed, 31 insertions(+), 10 deletions(-)
+
+diff --git a/p2p/rlpx.go b/p2p/rlpx.go
+index 2a9bdc1..61507e1 100644
+--- a/p2p/rlpx.go
++++ b/p2p/rlpx.go
+@@ -164,17 +164,20 @@ func (t *rlpx) doEncHandshake(prv *ecdsa.PrivateKey, dial *discover.Node) (disco
+ 	var (
+ 		sec secrets
+ 		err error
++		initiator bool	// A flag tracking if node is initiator of the handshake
+ 	)
+ 	if dial == nil {
+ 		sec, err = receiverEncHandshake(t.fd, prv, nil)
++		initiator = false
+ 	} else {
+ 		sec, err = initiatorEncHandshake(t.fd, prv, dial.ID, nil)
++		initiator = true
+ 	}
+ 	if err != nil {
+ 		return discover.NodeID{}, err
+ 	}
+ 	t.wmu.Lock()
+-	t.rw = newRLPXFrameRW(t.fd, sec)
++	t.rw = newRLPXFrameRW(t.fd, sec, initiator)
+ 	t.wmu.Unlock()
+ 	return sec.RemoteID, nil
+ }
+@@ -194,7 +197,7 @@ type encHandshake struct {
+ // which are negotiated during the encryption handshake.
+ type secrets struct {
+ 	RemoteID              discover.NodeID
+-	AES, MAC              []byte
++	AES, AES2, MAC        []byte
+ 	EgressMAC, IngressMAC hash.Hash
+ 	Token                 []byte
+ }
+@@ -233,10 +236,12 @@ func (h *encHandshake) secrets(auth, authResp []byte) (secrets, error) {
+ 	// derive base secrets from ephemeral key agreement
+ 	sharedSecret := crypto.Keccak256(ecdheSecret, crypto.Keccak256(h.respNonce, h.initNonce))
+ 	aesSecret := crypto.Keccak256(ecdheSecret, sharedSecret)
++	aesSecret2 := crypto.Keccak256(ecdheSecret, aesSecret)	// derive a second secret for aes
+ 	s := secrets{
+ 		RemoteID: h.remoteID,
+ 		AES:      aesSecret,
+-		MAC:      crypto.Keccak256(ecdheSecret, aesSecret),
++		AES2:     aesSecret2,
++		MAC:      crypto.Keccak256(ecdheSecret, aesSecret2), // derive mac secret from second aes secret
+ 	}
+ 
+ 	// setup sha3 instances for the MACs
+@@ -558,22 +563,38 @@ type rlpxFrameRW struct {
+ 	ingressMAC hash.Hash
+ }
+ 
+-func newRLPXFrameRW(conn io.ReadWriter, s secrets) *rlpxFrameRW {
++func newRLPXFrameRW(conn io.ReadWriter, s secrets, initiator bool) *rlpxFrameRW {
+ 	macc, err := aes.NewCipher(s.MAC)
+ 	if err != nil {
+ 		panic("invalid MAC secret: " + err.Error())
+ 	}
+-	encc, err := aes.NewCipher(s.AES)
++	// initializes aes keys according to role played by node during the handshake
++	var enccKey, deccKey []byte
++	if initiator {
++		enccKey = s.AES
++		deccKey = s.AES2
++	} else {
++		enccKey = s.AES2
++		deccKey = s.AES
++	}
++	// create 2 cyphers
++	encc, err := aes.NewCipher(enccKey)
++	if err != nil {
++		panic("invalid AES secret: " + err.Error())
++	}
++	decc, err := aes.NewCipher(deccKey)
+ 	if err != nil {
+ 		panic("invalid AES secret: " + err.Error())
+ 	}
+-	// we use an all-zeroes IV for AES because the key used
+-	// for encryption is ephemeral.
+-	iv := make([]byte, encc.BlockSize())
++	// we use an all-zeroes IVs for AES because the keys used
++	// for encryption are ephemeral.
++	enccIv := make([]byte, encc.BlockSize())
++	deccIv := make([]byte, decc.BlockSize())
++
+ 	return &rlpxFrameRW{
+ 		conn:       conn,
+-		enc:        cipher.NewCTR(encc, iv),
+-		dec:        cipher.NewCTR(encc, iv),
++		enc:        cipher.NewCTR(encc, enccIv),
++		dec:        cipher.NewCTR(decc, deccIv),
+ 		macCipher:  macc,
+ 		egressMAC:  s.EgressMAC,
+ 		ingressMAC: s.IngressMAC,
+-- 
+2.8.2.windows.1
+
